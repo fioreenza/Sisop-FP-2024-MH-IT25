@@ -7,10 +7,6 @@
 #define PORT 8080
 #define BUFFER_SIZE 1024
 
-int loggedIn = 0;
-char currentChannel[BUFFER_SIZE] = "";
-char username[BUFFER_SIZE] = ""; 
-
 void send_command(int sock, const char *command) {
     char buffer[BUFFER_SIZE];
 
@@ -18,22 +14,67 @@ void send_command(int sock, const char *command) {
     int bytes_received = recv(sock, buffer, sizeof(buffer) - 1, 0);
     if (bytes_received > 0) {
         buffer[bytes_received] = '\0';
+        printf("%s\n", buffer);
+    }
+}
 
-        if (loggedIn && strncmp(command, "JOIN CHANNEL", 12) == 0) {
-            char command_copy[BUFFER_SIZE];
-            strcpy(command_copy, command);
-            char *channelName = strtok(command_copy + 13, " ");
-            if (channelName != NULL) {
-                strcpy(currentChannel, channelName);
-            }
+void handle_commands(int sock, const char *username) {
+    char command[BUFFER_SIZE];
+    char currentChannel[BUFFER_SIZE] = "";
+    char currentRoom[BUFFER_SIZE] = "";
+    int loggedIn = 1;
+
+    while (loggedIn) {
+        if (currentChannel[0] != '\0' && currentRoom[0] != '\0') {
+            printf("[%s/%s/%s] ", username, currentChannel, currentRoom);
+        } else if (currentChannel[0] != '\0') {
+            printf("[%s/%s] ", username, currentChannel);
+        } else {
+            printf("[%s] ", username);
         }
 
-        if (loggedIn && currentChannel[0] != '\0') {
-            printf("[%s/%s] %s\n", username, currentChannel, buffer); 
-        } else if (loggedIn) {
-            printf("[%s] %s\n", username, buffer); 
-        } else {
-            printf("%s\n", buffer); 
+        fgets(command, sizeof(command), stdin);
+        command[strcspn(command, "\n")] = '\0';
+
+        send(sock, command, strlen(command), 0);
+
+        char buffer[BUFFER_SIZE];
+        int bytes_received = recv(sock, buffer, sizeof(buffer) - 1, 0);
+        if (bytes_received > 0) {
+            buffer[bytes_received] = '\0';
+
+            if (strstr(buffer, "berhasil login")) {
+                printf("[%s] %s\n", username, buffer);
+            } else if (strstr(buffer, "bergabung ke channel ")) {
+                char *channel_name = strstr(buffer, "bergabung ke channel ");
+                if (channel_name != NULL) {
+                    channel_name += strlen("bergabung ke channel ");
+                    sscanf(channel_name, "%s", currentChannel);
+                    currentRoom[0] = '\0'; // Clear the room when joining a new channel
+                    printf("[%s/%s] %s\n", username, currentChannel, buffer);
+                } else {
+                    printf("%s\n", buffer); // Default print if channel name not found
+                }
+            } else if (strstr(buffer, "bergabung ke room ")) {
+                char *room_name = strstr(buffer, "bergabung ke room ");
+                if (room_name != NULL) {
+                    room_name += strlen("room dibuat ");
+                    sscanf(room_name, "%s", currentRoom);
+                    printf("[%s/%s/%s] %s\n", username, currentChannel, currentRoom, buffer);
+                } else {
+                    printf("%s\n", buffer); // Default print if room name not found
+                }
+            } else {
+                printf("%s\n", buffer);
+            }
+        }
+        if (strcmp(command, "LOGOUT") == 0) {
+            loggedIn = 0;
+        } else if (strcmp(command, "LEAVE CHANNEL") == 0) {
+            currentChannel[0] = '\0';
+            currentRoom[0] = '\0';
+        } else if (strcmp(command, "LEAVE ROOM") == 0) {
+            currentRoom[0] = '\0';
         }
     }
 }
@@ -46,7 +87,8 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    strcpy(username, argv[2]); // Copy username from argv[2] to global variable
+    char username[BUFFER_SIZE];
+    strcpy(username, argv[2]);
 
     int sock;
     struct sockaddr_in server_addr;
@@ -78,32 +120,7 @@ int main(int argc, char *argv[]) {
     send_command(sock, command);
 
     if (strcmp(argv[1], "LOGIN") == 0) {
-        loggedIn = 1;
-        while (1) {
-            if (loggedIn && currentChannel[0] != '\0') {
-                printf("[%s/%s] ", username, currentChannel);
-            } else if (loggedIn) {
-                printf("[%s] ", username); 
-            } else {
-                puts(""); 
-            }
-            
-            fgets(command, sizeof(command), stdin);
-            command[strcspn(command, "\n")] = '\0'; 
-
-            send_command(sock, command);
-
-            if (strncmp(command, "JOIN CHANNEL", 12) == 0) {
-                char command_copy[BUFFER_SIZE];
-                strcpy(command_copy, command);
-                char *channelName = strtok(command_copy + 13, " ");
-                if (channelName != NULL) {
-                    strcpy(currentChannel, channelName);
-                }
-            } else if (strcmp(command, "LOGOUT") == 0) {
-                break;
-            }
-        }
+        handle_commands(sock, username);
     }
 
     close(sock);
