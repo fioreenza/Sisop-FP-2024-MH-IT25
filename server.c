@@ -824,7 +824,34 @@ void join_channel(int client_sock, ClientState *state, const char *username, con
 }
 
 
-void create_room(int client_sock, ClientState *state, const char *room_name) {
+void create_room(int client_sock, ClientState *state, const char *username, const char *room_name) {
+  // Check if the user is an admin in the specified channel
+    char auth_path[100];
+    snprintf(auth_path, sizeof(auth_path), "DiscorIT/%s/admin/auth.csv", state->current_channel);
+
+    AuthEntry entries[10];
+    int auth_count = 0;
+
+    if (!read_auth_confirm(state->current_channel, entries, &auth_count)) {
+        char response[] = "Error reading auth data\n";
+        send(client_sock, response, strlen(response), 0);
+        return;
+    }
+
+    bool is_admin = false;
+    for (int i = 0; i < auth_count; i++) {
+        if (strcmp(entries[i].name, username) == 0 && strcmp(entries[i].role, "ADMIN") == 0) {
+            is_admin = true;
+            break;
+        }
+    }
+
+    if (!is_admin) {
+        char response[] = "Anda tidak memiliki izin untuk membuat channel\n";
+        send(client_sock, response, strlen(response), 0);
+        return;
+    }
+    
     if (!state->in_channel) {
         char response[] = "You must join a channel before creating a room.\n";
         send(client_sock, response, strlen(response), 0);
@@ -846,7 +873,34 @@ void create_room(int client_sock, ClientState *state, const char *room_name) {
 }
 
 
-void rename_room(int client_sock, ClientState *state, const char *old_room_name, const char *new_room_name) {
+void rename_room(int client_sock, ClientState *state, const char *username, const char *old_room_name, const char *new_room_name) {
+      // Check if the user is an admin in the specified channel
+    char auth_path[100];
+    snprintf(auth_path, sizeof(auth_path), "DiscorIT/%s/admin/auth.csv", state->current_channel);
+
+    AuthEntry entries[10];
+    int auth_count = 0;
+
+    if (!read_auth_confirm(state->current_channel, entries, &auth_count)) {
+        char response[] = "Error reading auth data\n";
+        send(client_sock, response, strlen(response), 0);
+        return;
+    }
+
+    bool is_admin = false;
+    for (int i = 0; i < auth_count; i++) {
+        if (strcmp(entries[i].name, username) == 0 && strcmp(entries[i].role, "ADMIN") == 0) {
+            is_admin = true;
+            break;
+        }
+    }
+
+    if (!is_admin) {
+        char response[] = "Anda tidak memiliki izin untuk mengedit channel\n";
+        send(client_sock, response, strlen(response), 0);
+        return;
+    }
+    
     if (!state->in_channel) {
         char response[] = "You must join a channel before renaming a room.\n";
         send(client_sock, response, strlen(response), 0);
@@ -868,7 +922,33 @@ void rename_room(int client_sock, ClientState *state, const char *old_room_name,
     send(client_sock, response, strlen(response), 0);
 }
 
-void delete_room(int client_sock, ClientState *state, const char *room_name) {
+void delete_room(int client_sock, ClientState *state, const char *username, const char *room_name) {
+    char auth_path[100];
+    snprintf(auth_path, sizeof(auth_path), "DiscorIT/%s/admin/auth.csv", state->current_channel);
+
+    AuthEntry entries[10];
+    int auth_count = 0;
+
+    if (!read_auth_confirm(state->current_channel, entries, &auth_count)) {
+        char response[] = "Error reading auth data\n";
+        send(client_sock, response, strlen(response), 0);
+        return;
+    }
+
+    bool is_admin = false;
+    for (int i = 0; i < auth_count; i++) {
+        if (strcmp(entries[i].name, username) == 0 && strcmp(entries[i].role, "ADMIN") == 0) {
+            is_admin = true;
+            break;
+        }
+    }
+
+    if (!is_admin) {
+        char response[] = "Anda tidak memiliki izin untuk menghapus channel\n";
+        send(client_sock, response, strlen(response), 0);
+        return;
+    }
+    
     if (!state->in_channel) {
         char response[] = "You must join a channel before deleting a room.\n";
         send(client_sock, response, strlen(response), 0);
@@ -888,6 +968,48 @@ void delete_room(int client_sock, ClientState *state, const char *room_name) {
     snprintf(response, sizeof(response), "Room %s deleted from channel %s.\n", room_name, state->current_channel);
     send(client_sock, response, strlen(response), 0);
 }
+
+void delete_all_rooms(int client_sock, const char *username, const char *channel_name) {
+    char channel_path[256];
+    snprintf(channel_path, sizeof(channel_path), "DiscorIT/%s/%s", username, channel_name);
+
+    DIR *dir;
+    struct dirent *entry;
+
+    // Open the directory
+    if ((dir = opendir(channel_path)) == NULL) {
+        char response[100];
+        sprintf(response, "Gagal membuka direktori channel '%s'\n", channel_name);
+        send(client_sock, response, strlen(response), 0);
+        return;
+    }
+
+    // Iterate over entries in the directory
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_type == DT_DIR) {
+            if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+                continue; // Skip current and parent directory entries
+            }
+
+            char room_path[256];
+            snprintf(room_path, sizeof(room_path), "%s/%s", channel_path, entry->d_name);
+
+            // Remove the directory
+            if (rmdir(room_path) != 0) {
+                char response[100];
+                sprintf(response, "Gagal menghapus room '%s': %s\n", entry->d_name, strerror(errno));
+                send(client_sock, response, strlen(response), 0);
+            } else {
+                char response[100];
+                sprintf(response, "Room '%s' berhasil dihapus\n", entry->d_name);
+                send(client_sock, response, strlen(response), 0);
+            }
+        }
+    }
+
+    closedir(dir);
+}
+
 
 void join_room(int client_sock, ClientState *state, const char *room_name) {
     if (!state->in_channel) {
@@ -1026,15 +1148,26 @@ void handle_client(int client_sock) {
                             } else if (strncmp(buffer, "CREATE ROOM ", 12) == 0) {
                                 char room_name[50];
                                 sscanf(buffer, "CREATE ROOM %s", room_name);
-                                create_room(client_sock, &state, room_name);
-                            } else if (strncmp(buffer, "EDIT ROOM ", 12) == 0) {
-                                char old_room_name[50], new_room_name[50];
-                                sscanf(buffer, "EDIT ROOM %s TO %s", old_room_name, new_room_name);
-                                rename_room(client_sock, &state, old_room_name, new_room_name);
-                            } else if (strncmp(buffer, "DEL ROOM ", 12) == 0) {
-                                char room_name[50];
-                                sscanf(buffer, "DEL ROOM %s", room_name);
-                                delete_room(client_sock, &state, room_name);
+                                create_room(client_sock, &state, username, room_name);
+                            } else if (strncmp(buffer, "EDIT ROOM ", 10) == 0) {
+    char old_room_name[50], new_room_name[50];
+    int scanned = sscanf(buffer, "EDIT ROOM %s TO %s", old_room_name, new_room_name);
+    if (scanned == 2) {
+        rename_room(client_sock, &state, state.username, old_room_name, new_room_name);
+    } else {
+        char response[] = "Invalid EDIT ROOM command format\n";
+        send(client_sock, response, strlen(response), 0);
+    }
+}else if (strncmp(buffer, "DEL ROOM ", 9) == 0) {
+    char room_name[50];
+    sscanf(buffer, "DEL ROOM %s", room_name);
+    delete_room(client_sock, &state, state.username, room_name);
+}
+
+                              else if (strcmp(buffer, "DEL ROOM ALL") == 0) {
+                             char channel_name[50];
+   delete_all_rooms(client_sock, username, channel_name);
+  
                             } else if (strncmp(buffer, "JOIN ROOM ", 10) == 0) {
                                 char room_name[50];
                                 sscanf(buffer, "JOIN ROOM %s", room_name);
@@ -1090,6 +1223,19 @@ int main() {
         perror("Socket failed");
         exit(EXIT_FAILURE);
     }
+    
+     if(setsockopt(server_sock, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int)) < 0) {
+        perror("setsockopt(SO_REUSEADDR) failed");
+        close(server_sock);
+        exit(EXIT_FAILURE);
+    }
+
+    if(setsockopt(server_sock, SOL_SOCKET, SO_REUSEPORT, &(int){1}, sizeof(int)) < 0) {
+        perror("setsockopt(SO_REUSEPORT) failed");
+        close(server_sock);
+        exit(EXIT_FAILURE);
+    }
+
 
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
