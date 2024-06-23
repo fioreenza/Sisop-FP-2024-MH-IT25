@@ -821,6 +821,46 @@ void join_channel(int client_sock, ClientState *state, const char *username, con
     // Update client state to reflect that the user is in a channel
     state->in_channel = true;
     strcpy(state->current_channel, channel_name);
+    
+        char auth_path[100];
+    snprintf(auth_path, sizeof(auth_path), "DiscorIT/%s/admin/auth.csv", channel_name);
+
+    AuthEntry entries[10];
+    int auth_count = 0;
+
+    if (!read_auth_confirm(channel_name, entries, &auth_count)) {
+        //sprintf(response, "error reading auth data");
+        
+        return;
+    }
+
+    // Check if user already exists in auth.csv
+    for (int i = 0; i < auth_count; i++) {
+        if (strcmp(entries[i].name, username) == 0) {
+            //sprintf(response, "%s sudah terdaftar di dalam channel %s", username, channel_name);
+            
+            return;
+        }
+    }
+
+    // Add new entry for the user
+    AuthEntry new_entry;
+    new_entry.id_user = auth_count + 1; // Assuming id_user is sequentially assigned
+    strcpy(new_entry.name, username);
+    if (is_root_user(username)) {
+        strcpy(new_entry.role, "ROOT");
+    } else {
+        strcpy(new_entry.role, "USER");
+    }
+
+    entries[auth_count++] = new_entry;
+
+    // Write back to auth.csv
+    if (!write_auth(channel_name, entries, &auth_count)) {
+        char response[] = "Error writing auth data\n";
+        send(client_sock, response, strlen(response), 0);
+        return;
+    }
 }
 
 
@@ -1041,6 +1081,106 @@ void join_room(int client_sock, ClientState *state, const char *room_name) {
 }
 
 
+void ban_user(int client_sock, ClientState *state, const char *username, const char *channel_name) {
+    if (!state->in_channel || strcmp(state->current_channel, channel_name) != 0) {
+        char response[] = "You must join the correct channel before banning.\n";
+        send(client_sock, response, strlen(response), 0);
+        return;
+    }
+
+    char auth_path[100];
+    snprintf(auth_path, sizeof(auth_path), "DiscorIT/%s/admin/auth.csv", channel_name);
+
+    AuthEntry entries[10];
+    int auth_count = 0;
+
+    if (!read_auth_confirm(channel_name, entries, &auth_count)) {
+        char response[] = "Error reading auth data\n";
+        send(client_sock, response, strlen(response), 0);
+        return;
+    }
+
+    bool user_found = false;
+    for (int i = 0; i < auth_count; i++) {
+        if (strcmp(entries[i].name, username) == 0) {
+            strcpy(entries[i].role, "Banned");
+            user_found = true;
+            break;
+        }
+    }
+
+    if (!user_found) {
+        char response[] = "User not found in channel\n";
+        send(client_sock, response, strlen(response), 0);
+        return;
+    }
+
+    // Write back to auth.csv
+    if (!write_auth(channel_name, entries, &auth_count)) {
+        char response[] = "Error writing auth data\n";
+        send(client_sock, response, strlen(response), 0);
+        return;
+    }
+
+    char response[100];
+    sprintf(response, "%s diban\n", username);
+    send(client_sock, response, strlen(response), 0);
+}
+
+void unban_user(int client_sock, ClientState *state, const char *username, const char *channel_name) {
+    if (!state->in_channel || strcmp(state->current_channel, channel_name) != 0) {
+        char response[] = "You must join the correct channel before unbanning.\n";
+        send(client_sock, response, strlen(response), 0);
+        return;
+    }
+
+    char auth_path[100];
+    snprintf(auth_path, sizeof(auth_path), "DiscorIT/%s/admin/auth.csv", channel_name);
+
+    AuthEntry entries[10];
+    int auth_count = 0;
+
+    if (!read_auth_confirm(channel_name, entries, &auth_count)) {
+        char response[] = "Error reading auth data\n";
+        send(client_sock, response, strlen(response), 0);
+        return;
+    }
+
+    bool user_found = false;
+    for (int i = 0; i < auth_count; i++) {
+        if (strcmp(entries[i].name, username) == 0) {
+            if (strcmp(entries[i].role, "Banned") == 0) {
+                strcpy(entries[i].role, "USER");
+                user_found = true;
+                break;
+            } else {
+                char response[100];
+                sprintf(response, "%s tidak sedang dibanned\n", username);
+                send(client_sock, response, strlen(response), 0);
+                return;
+            }
+        }
+    }
+
+    if (!user_found) {
+        char response[] = "User not found in channel\n";
+        send(client_sock, response, strlen(response), 0);
+        return;
+    }
+
+    // Write back to auth.csv
+    if (!write_auth(channel_name, entries, &auth_count)) {
+        char response[] = "Error writing auth data\n";
+        send(client_sock, response, strlen(response), 0);
+        return;
+    }
+
+    char response[100];
+    sprintf(response, "%s kembali\n", username);
+    send(client_sock, response, strlen(response), 0);
+}
+
+
 
 void handle_client(int client_sock) {
     char buffer[BUFFER_SIZE];
@@ -1167,7 +1307,16 @@ void handle_client(int client_sock) {
                               else if (strcmp(buffer, "DEL ROOM ALL") == 0) {
                              char channel_name[50];
    delete_all_rooms(client_sock, username, channel_name);
-  
+  }
+ else if (strncmp(buffer, "BAN ", 4) == 0) {
+                                char username_to_ban[50], channel_name[50];
+                                sscanf(buffer, "BAN %s", username_to_ban);
+                                ban_user(client_sock, &state, username_to_ban, channel_name);
+                                  }
+ else if (strncmp(buffer, "UNBAN ", 4) == 0) {
+                                char username_to_unban[50], channel_name[50];
+                                sscanf(buffer, "UNBAN %s", username_to_unban);
+                                unban_user(client_sock, &state, username_to_unban, channel_name);
                             } else if (strncmp(buffer, "JOIN ROOM ", 10) == 0) {
                                 char room_name[50];
                                 sscanf(buffer, "JOIN ROOM %s", room_name);
