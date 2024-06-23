@@ -8,11 +8,15 @@
 #include <bcrypt.h>
 #include <dirent.h>
 #include <pthread.h>
+#include <errno.h>
+#include <pthread.h>
 
 #define PORT 8080
 #define MAX_CLIENTS 10
 #define MAX_USERS 100
 #define BUFFER_SIZE 1024
+#define MAX_ROOMS 100
+#define MAX_ROOM_NAME_LEN 50
 #define CSV_FILE "DiscorIT/users.csv"
 #define CHANNELS_FILE "DiscorIT/channels.csv"
 #define MAX_LINE_LENGTH 1024
@@ -36,6 +40,24 @@ typedef struct {
     char role[10]; // untuk mengetahui admin SAJA
 } AuthEntry;
 
+
+typedef struct {
+    char name[MAX_ROOM_NAME_LEN];
+} Room;
+
+typedef struct {
+    bool is_authenticated;
+    bool in_channel;
+    bool in_room;
+    char username[50];
+    char current_channel[50];
+    char current_room[50];
+} ClientState;
+
+
+
+Room rooms[MAX_ROOMS];
+int num_rooms = 0;
 
 bool file_exists(const char *filename) {
     return access(filename, F_OK) != -1;
@@ -399,6 +421,23 @@ void remove_user(int client_sock, const char *username) {
     send(client_sock, response, strlen(response), 0);
 }
 
+bool is_root_user(const char* username) {
+    User users[100];
+    int user_count = 0;
+
+    if (!read_csv(users, &user_count)) {
+        return false; // If reading the CSV fails, we cannot determine the user's role
+    }
+
+    for (int i = 0; i < user_count; i++) {
+        if (strcmp(users[i].name, username) == 0 && strcmp(users[i].role, "ROOT") == 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void create_channel(int client_sock, const char *username, const char *channel_name, const char *key) {
     Channel channels[100];
     int count = 0;
@@ -459,7 +498,11 @@ void create_channel(int client_sock, const char *username, const char *channel_n
     AuthEntry admin_entry;
     admin_entry.id_user = 1;
     strcpy(admin_entry.name, username);
-    strcpy(admin_entry.role, "ADMIN");
+    if (is_root_user(username)) {
+        strcpy(admin_entry.role, "ROOT");
+    } else {
+        strcpy(admin_entry.role, "ADMIN");
+    }
 
     if (!initialize_auth_csv(channel_name) || !read_auth(channel_name, entries, &auth_count)) {
         char response[] = "Error reading channel data\n";
@@ -724,6 +767,8 @@ void delete_channel(int client_sock, const char *channel_name, const char *usern
     send(client_sock, response, strlen(response), 0);
 }
 
+
+
 void list_channels(int client_sock) {
     Channel channels[100];
     int count = 0;
@@ -744,7 +789,7 @@ void list_channels(int client_sock) {
     send(client_sock, response, strlen(response), 0);
 }
 
-void join_channel(int client_sock, const char *username, const char *channel_name) {
+void join_channel(int client_sock, ClientState *state, const char *username, const char *channel_name) {
     Channel channels[100];
     int count = 0;
 
@@ -755,11 +800,9 @@ void join_channel(int client_sock, const char *username, const char *channel_nam
     }
 
     bool channel_found = false;
-    int channel_index = -1;
     for (int i = 0; i < count; i++) {
         if (strcmp(channels[i].name, channel_name) == 0) {
             channel_found = true;
-            channel_index = i;
             break;
         }
     }
@@ -772,15 +815,115 @@ void join_channel(int client_sock, const char *username, const char *channel_nam
     }
 
     char response[100];
-    sprintf(response, "%s bergabung ke channel %s\n", username, channel_name);
+    sprintf(response, "%s bergabung ke channel %s", username, channel_name);
     send(client_sock, response, strlen(response), 0);
-    
+
+    // Update client state to reflect that the user is in a channel
+    state->in_channel = true;
+    strcpy(state->current_channel, channel_name);
 }
+
+
+void create_room(int client_sock, ClientState *state, const char *room_name) {
+    if (!state->in_channel) {
+        char response[] = "You must join a channel before creating a room.\n";
+        send(client_sock, response, strlen(response), 0);
+        return;
+    }
+
+    char path[100];
+    snprintf(path, sizeof(path), "DiscorIT/%s/%s", state->current_channel, room_name);
+
+    if (mkdir(path, 0777) == -1) {
+        char response[100];
+        sprintf(response, "Failed to create room: %s\n", strerror(errno));
+        send(client_sock, response, strlen(response), 0);
+    } else {
+        char response[100];
+        sprintf(response, "Room %s created in channel %s\n", room_name, state->current_channel);
+        send(client_sock, response, strlen(response), 0);
+    }
+}
+
+
+void rename_room(int client_sock, ClientState *state, const char *old_room_name, const char *new_room_name) {
+    if (!state->in_channel) {
+        char response[] = "You must join a channel before renaming a room.\n";
+        send(client_sock, response, strlen(response), 0);
+        return;
+    }
+
+    char old_path[200], new_path[200];
+    snprintf(old_path, sizeof(old_path), "DiscorIT/%s/%s", state->current_channel, old_room_name);
+    snprintf(new_path, sizeof(new_path), "DiscorIT/%s/%s", state->current_channel, new_room_name);
+
+    if (rename(old_path, new_path) == -1) {
+        char response[] = "Error renaming room. Make sure the room exists and the new name is unique.\n";
+        send(client_sock, response, strlen(response), 0);
+        return;
+    }
+
+    char response[100];
+    snprintf(response, sizeof(response), "Room %s renamed to %s in channel %s.\n", old_room_name, new_room_name, state->current_channel);
+    send(client_sock, response, strlen(response), 0);
+}
+
+void delete_room(int client_sock, ClientState *state, const char *room_name) {
+    if (!state->in_channel) {
+        char response[] = "You must join a channel before deleting a room.\n";
+        send(client_sock, response, strlen(response), 0);
+        return;
+    }
+
+    char path[200];
+    snprintf(path, sizeof(path), "DiscorIT/%s/%s", state->current_channel, room_name);
+
+    if (rmdir(path) == -1) {
+        char response[] = "Error deleting room. Make sure the room exists and is empty.\n";
+        send(client_sock, response, strlen(response), 0);
+        return;
+    }
+
+    char response[100];
+    snprintf(response, sizeof(response), "Room %s deleted from channel %s.\n", room_name, state->current_channel);
+    send(client_sock, response, strlen(response), 0);
+}
+
+void join_room(int client_sock, ClientState *state, const char *room_name) {
+    if (!state->in_channel) {
+        char response[] = "You must join a channel before joining a room.\n";
+        send(client_sock, response, strlen(response), 0);
+        return;
+    }
+
+    char path[100];
+    snprintf(path, sizeof(path), "DiscorIT/%s/%s", state->current_channel, room_name);
+
+    struct stat st;
+    if (stat(path, &st) == -1 || !S_ISDIR(st.st_mode)) {
+        char response[100];
+        sprintf(response, "Room %s does not exist in channel %s\n", room_name, state->current_channel);
+        send(client_sock, response, strlen(response), 0);
+    } else {
+        state->in_room = true;
+        strcpy(state->current_room, room_name);
+        char response[100];
+        sprintf(response, "You have joined the room %s in channel %s\n", room_name, state->current_channel);
+        send(client_sock, response, strlen(response), 0);
+    }
+    
+    char response[100];
+    sprintf(response, "bergabung ke room %s", room_name);
+    send(client_sock, response, strlen(response), 0);
+
+}
+
 
 
 void handle_client(int client_sock) {
     char buffer[BUFFER_SIZE];
     int bytes_received;
+    ClientState state = {0};
 
     while ((bytes_received = recv(client_sock, buffer, sizeof(buffer), 0)) > 0) {
         buffer[bytes_received] = '\0';
@@ -807,6 +950,8 @@ void handle_client(int client_sock) {
                     user_found = true;
                     is_root = strcmp(users[i].role, "ROOT") == 0;
                     if (bcrypt_check(password, users[i].password)) {
+                        state.is_authenticated = true;
+                        strcpy(state.username, username);
                         char response[100];
                         sprintf(response, "%s berhasil login\n", username);
                         send(client_sock, response, strlen(response), 0);
@@ -854,12 +999,12 @@ void handle_client(int client_sock) {
                                 char option[10], channel_name[50], key[50];
                                 sscanf(buffer, "CREATE CHANNEL %s -%s %s", channel_name, option, key);
                                 if (strcmp(option, "k") == 0) {
-                                create_channel(client_sock, username, channel_name, key);
+                                    create_channel(client_sock, username, channel_name, key);
                                 } else {
-                                        char response[] = "Invalid CREATE command\n";
-                                        send(client_sock, response, strlen(response), 0);
-                                    }
-                           } else if (strncmp(buffer, "EDIT CHANNEL ", 13) == 0) {
+                                    char response[] = "Invalid CREATE command\n";
+                                    send(client_sock, response, strlen(response), 0);
+                                }
+                            } else if (strncmp(buffer, "EDIT CHANNEL ", 13) == 0) {
                                 char old_channel_name[50], new_channel_name[50];
                                 int scanned = sscanf(buffer, "EDIT CHANNEL %s TO %s", old_channel_name, new_channel_name);
                                 if (scanned == 2) {
@@ -868,19 +1013,35 @@ void handle_client(int client_sock) {
                                     char response[] = "Invalid EDIT CHANNEL command\n";
                                     send(client_sock, response, strlen(response), 0);
                                 }
-                           } else if (strncmp(buffer, "DEL CHANNEL ", 10) == 0) {
-    				char channel_name[50];
-   				sscanf(buffer, "DEL CHANNEL %s", channel_name);
-    				delete_channel(client_sock, channel_name, username);
-    			   } else if (strcmp(buffer, "LIST CHANNEL") == 0) {
-    				list_channels(client_sock);
-			  } else if (strncmp(buffer, "JOIN CHANNEL ", 13) == 0) {
-			    char channel_name[50];
-			    sscanf(buffer, "JOIN CHANNEL %s", channel_name);
-			    join_channel(client_sock, username, channel_name);
-			    char response[100];
-			    send(client_sock, response, strlen(response), 0);
-                           } else if (strcmp(buffer, "LOGOUT") == 0) {
+                            } else if (strncmp(buffer, "DEL CHANNEL ", 11) == 0) {
+                                char channel_name[50];
+                                sscanf(buffer, "DEL CHANNEL %s", channel_name);
+                                delete_channel(client_sock, channel_name, username);
+                            } else if (strcmp(buffer, "LIST CHANNEL") == 0) {
+                                list_channels(client_sock);
+                            } else if (strncmp(buffer, "JOIN CHANNEL ", 13) == 0) {
+                                char channel_name[50];
+                                sscanf(buffer, "JOIN CHANNEL %s", channel_name);
+                                join_channel(client_sock, &state, username, channel_name);
+                            } else if (strncmp(buffer, "CREATE ROOM ", 12) == 0) {
+                                char room_name[50];
+                                sscanf(buffer, "CREATE ROOM %s", room_name);
+                                create_room(client_sock, &state, room_name);
+                            } else if (strncmp(buffer, "EDIT ROOM ", 12) == 0) {
+                                char old_room_name[50], new_room_name[50];
+                                sscanf(buffer, "EDIT ROOM %s TO %s", old_room_name, new_room_name);
+                                rename_room(client_sock, &state, old_room_name, new_room_name);
+                            } else if (strncmp(buffer, "DEL ROOM ", 12) == 0) {
+                                char room_name[50];
+                                sscanf(buffer, "DEL ROOM %s", room_name);
+                                delete_room(client_sock, &state, room_name);
+                            } else if (strncmp(buffer, "JOIN ROOM ", 10) == 0) {
+                                char room_name[50];
+                                sscanf(buffer, "JOIN ROOM %s", room_name);
+                                join_room(client_sock, &state, room_name);
+                            } else if (strcmp(buffer, "LOGOUT") == 0) {
+                                state.is_authenticated = false;
+                                state.in_channel = false;
                                 char response[100];
                                 sprintf(response, "%s berhasil logout\n", username);
                                 send(client_sock, response, strlen(response), 0);
@@ -891,9 +1052,9 @@ void handle_client(int client_sock) {
                             }
                         }
                     } else {
-                    	char response[] = "Password salah\n";
-        		send(client_sock, response, strlen(response), 0);
-        		break;
+                        char response[] = "Password salah\n";
+                        send(client_sock, response, strlen(response), 0);
+                        break;
                     }
                     break;
                 }
