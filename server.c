@@ -55,6 +55,17 @@ typedef struct {
 } ClientState;
 
 
+typedef struct {
+    int id;
+    char timestamp[20]; 
+    char username[50];
+    char message[200]; 
+} ChatMessage;
+
+#define MAX_MESSAGES 1000 // Maximum number of messages in a room
+
+ChatMessage chat_messages[MAX_MESSAGES];
+int message_count = 0;
 
 Room rooms[MAX_ROOMS];
 int num_rooms = 0;
@@ -1180,6 +1191,98 @@ void unban_user(int client_sock, ClientState *state, const char *username, const
     send(client_sock, response, strlen(response), 0);
 }
 
+// Function to send a chat message
+void send_chat_message(const char *username, const char *message) {
+    if (message_count >= MAX_MESSAGES) {
+        // Handle maximum message count reached
+        printf("Maximum chat messages reached. Cannot send message.\n");
+        return;
+    }
+
+    ChatMessage new_message;
+    new_message.id = message_count + 1; // Incremental message ID
+    time_t current_time = time(NULL);
+    struct tm *timeinfo = localtime(&current_time);
+    strftime(new_message.timestamp, sizeof(new_message.timestamp), "%d/%m/%Y %H:%M:%S", timeinfo);
+    strcpy(new_message.username, username);
+    strcpy(new_message.message, message);
+
+    // Store the message in the array
+    chat_messages[message_count++] = new_message;
+
+    // Write the message to chat.csv file (optional)
+    write_to_chat_csv(new_message);
+}
+
+// Function to see all chat messages in the room
+void see_chat_messages(int client_sock) {
+    char response[BUFFER_SIZE];
+
+    if (message_count == 0) {
+        sprintf(response, "No messages in this room.\n");
+        send(client_sock, response, strlen(response), 0);
+        return;
+    }
+
+    sprintf(response, "Sebelumnya\n");
+    send(client_sock, response, strlen(response), 0);
+
+    for (int i = 0; i < message_count; i++) {
+        sprintf(response, "[%s][%d][%s] \"%s\"\n", chat_messages[i].timestamp, chat_messages[i].id,
+                chat_messages[i].username, chat_messages[i].message);
+        send(client_sock, response, strlen(response), 0);
+    }
+
+    sprintf(response, "Sesudahnya\n");
+    send(client_sock, response, strlen(response), 0);
+}
+
+// Function to edit a chat message by ID
+void edit_chat_message(int client_sock, int message_id, const char *new_message) {
+    char response[BUFFER_SIZE];
+    bool message_found = false;
+
+    for (int i = 0; i < message_count; i++) {
+        if (chat_messages[i].id == message_id) {
+            // Update the message
+            strcpy(chat_messages[i].message, new_message);
+            message_found = true;
+            sprintf(response, "Pesan berhasil diubah.\n");
+            send(client_sock, response, strlen(response), 0);
+            break;
+        }
+    }
+
+    if (!message_found) {
+        sprintf(response, "Pesan dengan ID %d tidak ditemukan.\n", message_id);
+        send(client_sock, response, strlen(response), 0);
+    }
+}
+
+// Function to delete a chat message by ID
+void delete_chat_message(int client_sock, int message_id) {
+    char response[BUFFER_SIZE];
+    bool message_found = false;
+
+    for (int i = 0; i < message_count; i++) {
+        if (chat_messages[i].id == message_id) {
+            // Shift all subsequent messages one position left
+            for (int j = i; j < message_count - 1; j++) {
+                chat_messages[j] = chat_messages[j + 1];
+            }
+            message_count--;
+            message_found = true;
+            sprintf(response, "Pesan berhasil dihapus.\n");
+            send(client_sock, response, strlen(response), 0);
+            break;
+        }
+    }
+
+    if (!message_found) {
+        sprintf(response, "Pesan dengan ID %d tidak ditemukan.\n", message_id);
+        send(client_sock, response, strlen(response), 0);
+    }
+}
 
 
 void handle_client(int client_sock) {
@@ -1320,7 +1423,17 @@ void handle_client(int client_sock) {
                             } else if (strncmp(buffer, "JOIN ROOM ", 10) == 0) {
                                 char room_name[50];
                                 sscanf(buffer, "JOIN ROOM %s", room_name);
-                                join_room(client_sock, &state, room_name);
+                                join_room(client_sock, &state, room_name);     
+ }else if (strcmp(command, "CHAT") == 0) {
+            send_chat_message(username, extra);
+            sprintf(buffer, "[%s/%s/%s] CHAT \"%s\" sent.\n", username, current_channel, current_room, extra);
+            send(client_sock, buffer, strlen(buffer), 0);
+        } else if (strcmp(command, "SEE CHAT") == 0) {
+            see_chat_messages(client_sock);
+        } else if (strcmp(command, "EDIT CHAT") == 0) {
+            edit_chat_message(client_sock, message_id, extra);
+        } else if (strcmp(command, "DEL CHAT") == 0) {
+            delete_chat_message(client_sock, message_id);
                             } else if (strcmp(buffer, "LOGOUT") == 0) {
                                 state.is_authenticated = false;
                                 state.in_channel = false;
