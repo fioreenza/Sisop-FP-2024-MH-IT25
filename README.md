@@ -3515,3 +3515,177 @@ Program `monitor.c` berfungsi sebagai client untuk memonitor dan berinteraksi de
 2. JOIN CHANNEL (WITH KEY)
 
 # Penyelesaian Discorit (Setelah Revisi) 
+
+## server.c
+
+Menambah kode fungsi `daemonize()`
+
+```c
+void daemonize() {
+    pid_t pid;
+
+    // Fork the parent process
+    printf("Forking the process...\n");
+    pid = fork();
+
+    if (pid < 0) {
+        perror("Fork failed");
+        exit(EXIT_FAILURE);
+    }
+
+    // Terminate the parent process
+    if (pid > 0) {
+        printf("Exiting parent process...\n");
+        exit(EXIT_SUCCESS);
+    }
+
+    // On success: the child process becomes the session leader
+    printf("Setting session leader...\n");
+    if (setsid() < 0) {
+        perror("setsid failed");
+        exit(EXIT_FAILURE);
+    }
+
+    // Ignore signal sent from child to parent process
+    signal(SIGCHLD, SIG_IGN);
+
+    // Fork off for the second time
+    printf("Forking again...\n");
+    pid = fork();
+
+    if (pid < 0) {
+        perror("Fork failed");
+        exit(EXIT_FAILURE);
+    }
+
+    // Terminate the parent process
+    if (pid > 0) {
+        printf("Exiting parent process...\n");
+        exit(EXIT_SUCCESS);
+    }
+
+    // Set new file permissions
+    printf("Setting file permissions...\n");
+    umask(0);
+
+    // Change the working directory to the root directory
+    printf("Changing working directory...\n");
+    if (chdir("/") < 0) {
+        perror("chdir failed");
+        exit(EXIT_FAILURE);
+    }
+
+// Close all open file descriptors
+    //printf("Closing file descriptors...\n"); 
+    // Close all open file descriptors
+    //for (int x = sysconf(_SC_OPEN_MAX); x >= 0; x--) {
+        //if (close(x) == -1) {
+            //perror("Error closing file descriptor");
+            //fprintf(stderr, "Failed to close file descriptor %d\n", x);
+            // Add more specific handling if needed
+        //}
+    //}
+    
+    // Reopen standard file descriptors to /dev/null
+    printf("Redirecting standard file descriptors...\n");
+    open("/dev/null", O_RDWR); // stdin
+    dup(0); // stdout
+    dup(0); // stderr
+
+    printf("Daemon setup complete.\n");
+} 
+
+
+int main() {
+    int server_sock, client_sock;
+    struct sockaddr_in server_addr, client_addr;
+    socklen_t addr_len = sizeof(client_addr);
+    pthread_t tid;
+
+    // Daemonize the process
+    printf("Starting server as a daemon...\n");
+    daemonize();
+
+    initialize_csv();
+
+    if ((server_sock = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
+        perror("Socket failed");
+        exit(EXIT_FAILURE);
+    }
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(PORT);
+
+    if (bind(server_sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        perror("Bind failed");
+        close(server_sock);
+        exit(EXIT_FAILURE);
+    }
+
+    if (listen(server_sock, MAX_CLIENTS) < 0) {
+        perror("Listen failed");
+        close(server_sock);
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Server berjalan di port %d\n", PORT);
+
+    while (1) {
+        if ((client_sock = accept(server_sock, (struct sockaddr *)&client_addr, &addr_len)) < 0) {
+            perror("Accept failed");
+            continue;
+        }
+
+        int *client_sock_ptr = malloc(sizeof(int));
+        *client_sock_ptr = client_sock;
+
+        if (pthread_create(&tid, NULL, client_handler, client_sock_ptr) != 0) {
+            perror("Thread creation failed");
+            close(client_sock);
+            free(client_sock_ptr);
+        }
+    }
+
+    close(server_sock);
+    return 0;
+}
+```
+
+Fungsi daemonize() dalam program server.c bertujuan untuk mengubah proses server menjadi daemon. Daemon adalah proses yang berjalan di background tanpa adanya interaksi langsung dari pengguna.
+
+### Implikasi terhadap Proses Server
+
+- `Background Process`: Setelah daemonize, server tidak lagi terkait dengan terminal pengguna. Ini memungkinkan server untuk berjalan di background secara mandiri.
+- `Keamanan dan Stabilitas`: Daemon memiliki keuntungan dalam keamanan dan stabilitas sistem karena tidak bergantung pada sesi terminal atau interaksi pengguna langsung.
+- `Logging`: Karena output tidak lagi terkait dengan terminal, logging harus diimplementasikan secara eksplisit untuk memantau aktivitas daemon.
+
+## Hasil Revisi
+
+- REGISTER, LOGIN, LIST USER
+  	![Register_Login_ListUser](https://github.com/fioreenza/Sisop-FP-2024-MH-IT25/assets/144349814/2cd4190d-0afa-4c8e-8e8d-78e27ce740ff)
+- LIST CHANNEL, JOIN CHANNEL, LIST ROOM, LIST USER
+	![ListCH_JoinCH_ListRoom_ListUser](https://github.com/fioreenza/Sisop-FP-2024-MH-IT25/assets/144349814/caed2f6d-b69c-4434-a733-91cea8cfee14)
+- CHAT, SEE CHAT, EDIT CHAT, DELETE CHAT
+	![Chat_SeeChat_EditChat_DelChat](https://github.com/fioreenza/Sisop-FP-2024-MH-IT25/assets/144349814/1f22ba6a-2b9e-4464-821d-edda7bbe6a87)
+- LIST USER, EDIT WHERE -u, EDIT WHERE -p, REMOVE USER
+	![ListUser_EditUserU_EditUserP_Remove User](https://github.com/fioreenza/Sisop-FP-2024-MH-IT25/assets/144349814/20010128-a7d1-4aea-9cc6-7c3318fc6ce7)
+- CREATE CHANNEL, EDIT CHANNEL, DEL CHANNEL
+	![CreateCH_EditCH_DelCH](https://github.com/fioreenza/Sisop-FP-2024-MH-IT25/assets/144349814/e309d91d-60ee-417f-853c-0c8eaa6b5e2c)
+- CREATE ROOM, EDIT ROOM, DELETE ROOM, DELETE ROOM ALL
+	![CreateRoom_EditRoom_DelRoom_DelAllRoom](https://github.com/fioreenza/Sisop-FP-2024-MH-IT25/assets/144349814/09efa74a-952b-4234-863d-bd96a191da1e)
+- BAN USER
+	![BannedUser](https://github.com/fioreenza/Sisop-FP-2024-MH-IT25/assets/144349814/eacbc4ca-1bb2-4b5c-8f18-129b45c0f011)
+- UNBAN USER
+	![UnbannedUser](https://github.com/fioreenza/Sisop-FP-2024-MH-IT25/assets/144349814/41ab11e8-5c7f-4027-bd87-25dad3748f72)
+- REMOVE USER
+	![RemoveUser](https://github.com/fioreenza/Sisop-FP-2024-MH-IT25/assets/144349814/918acad8-5830-46c9-ab45-f6a4f61ffe8e)
+- EDIT PROFILE SELF -u
+	![EditProfileU](https://github.com/fioreenza/Sisop-FP-2024-MH-IT25/assets/144349814/df57ddda-1871-46cc-9f4e-65f76a82beae)
+- EDIT PROFLE SELF -p
+	![EditProfileP](https://github.com/fioreenza/Sisop-FP-2024-MH-IT25/assets/144349814/a7c3fba1-d5db-4807-b616-d6aa314fa188)
+- EXIT
+	![EXIT](https://github.com/fioreenza/Sisop-FP-2024-MH-IT25/assets/144349814/ef6cde47-ce2a-47ec-8b02-e12f5d136feb)
+- monitor.c
+	![monitor](https://github.com/fioreenza/Sisop-FP-2024-MH-IT25/assets/144349814/8538bb35-cf4a-4594-9278-e6902e4caf73)
+
