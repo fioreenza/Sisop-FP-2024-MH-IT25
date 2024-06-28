@@ -331,6 +331,7 @@ pen dikick
 ```
 
 E. User
+
 User dapat mengubah informasi profil mereka, user yang di ban tidak dapat masuk kedalam channel dan dapat keluar dari room, channel, atau keluar sepenuhnya dari DiscorIT.
 
 1. Edit User Username
@@ -389,6 +390,7 @@ anda telah diban, silahkan menghubungi admin
 [qurbancare] EXIT
 ```
 F. Error Handling
+
 Jika ada command yang tidak sesuai penggunaannya. Maka akan mengeluarkan pesan error dan tanpa keluar dari program client.
 
 G. Monitor
